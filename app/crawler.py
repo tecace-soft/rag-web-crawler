@@ -1,57 +1,42 @@
 import re
+import asyncio
 from pathlib import Path
-
-import requests
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup, NavigableString
 
-# Path to URL list: one URL per line (blank lines and # comments ignored)
 URLS_FILE = Path(__file__).resolve().parent.parent / "urls.txt"
-
-# Minimum character length for a standalone text block to keep
 MIN_LEN = 40
-# Skip elements with these tag names (no text extracted from inside them)
 SKIP_TAGS = {"script", "style", "noscript", "svg", "iframe"}
-# Text that looks like UI/nav — skip blocks that are exactly or start with these
-BLOCKLIST = {
-    "Sign in", "Log in", "Contact", "Get started", "Learn more",
-    "Privacy Policy", "Terms of Service", "Schedule a Demo", "Menu", "Close",
-    "Cookie", "Accept", "Subscribe", "Submit", "Loading",
-}
-# Patterns that indicate noise (e.g. script content, long base64, SVG/XML)
+BLOCKLIST = {"Sign in", "Log in", "Contact", "Get started", "Learn more", "Privacy Policy", "Terms of Service", "Schedule a Demo", "Menu", "Close", "Cookie", "Accept", "Subscribe", "Submit", "Loading"}
 NOISE_PATTERNS = [
     re.compile(r"^\s*(?:var|let|const|function|=>|\(function)\s", re.I),
     re.compile(r"^\s*\{[\s\S]*\"@"),
-    re.compile(r"^[A-Za-z0-9+/=]{100,}"),  # long alphanumeric (e.g. base64)
+    re.compile(r"^[A-Za-z0-9+/=]{100,}"),
     re.compile(r"<\?xml\s+version=", re.I),
     re.compile(r"^\s*xml\s+version=", re.I),
 ]
 
-
 def _is_noise(text: str, allow_short: bool = False) -> bool:
-    if not text:
-        return True
+    if not text: return True
     t = text.strip()
-    if not allow_short and len(t) < MIN_LEN:
-        return True
-    if t in BLOCKLIST:
-        return True
+    if not allow_short and len(t) < MIN_LEN: return True
+    if t in BLOCKLIST: return True
     for pat in NOISE_PATTERNS:
-        if pat.search(text):
-            return True
+        if pat.search(text): return True
     return False
-
 
 def _get_main_root(soup: BeautifulSoup):
     """Prefer main content area to avoid header/nav/footer."""
-    main = soup.find("main") or soup.find(attrs={"data-main-content-parent": "true"})
+    # Wix FAQ 전용 컨테이너를 먼저 찾습니다.
+    faq_root = soup.find(attrs={"data-testid": "faq-list"})
+    if faq_root:
+        return faq_root
+        
+    # FAQ가 없는 일반 페이지의 경우 본문을 찾습니다.
+    main = soup.find("main") or soup.find(attrs={"data-main-content-parent": "true"}) or soup.find(id="SITE_PAGES_CONTAINER")
     return main if main else soup.body or soup
 
-
 def _extract_semantic_chunks(root) -> list[dict]:
-    """
-    Walk the tree and build chunks with optional heading context.
-    Each chunk has 'heading' (or None) and 'text' for RAG-friendly retrieval.
-    """
     chunks: list[dict] = []
     current_heading: str | None = None
     current_lines: list[str] = []
@@ -59,125 +44,152 @@ def _extract_semantic_chunks(root) -> list[dict]:
     def flush_chunk():
         nonlocal current_heading, current_lines
         text = "\n".join(current_lines).strip() if current_lines else (current_heading or "")
-        if not text:
-            return
+        if not text: return
         if current_lines:
             if _is_noise(text):
                 current_lines = []
                 return
         else:
-            # Heading-only chunk (e.g. short section title)
             if _is_noise(text, allow_short=True):
                 current_heading = None
                 return
         had_body = bool(current_lines)
-        chunks.append({
-            "heading": current_heading,
-            "text": text,
-        })
+        chunks.append({"heading": current_heading, "text": text})
         current_lines = []
-        if not had_body and current_heading:
-            current_heading = None
+        if not had_body and current_heading: current_heading = None
 
     def collect_text(elem):
         nonlocal current_heading, current_lines
-        if elem.name in SKIP_TAGS:
-            return
+        if elem.name in SKIP_TAGS: return
         if hasattr(elem, "name") and elem.name:
             if elem.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 flush_chunk()
                 t = elem.get_text(separator=" ", strip=True)
-                if t and not _is_noise(t):
-                    current_heading = t
+                if t and not _is_noise(t): current_heading = t
                 return
             if elem.name in ("section", "article"):
                 flush_chunk()
-                for child in elem.children:
-                    collect_text(child)
+                for child in elem.children: collect_text(child)
                 flush_chunk()
                 return
-        # Leaf text or container: get direct text only for inline elements
         if isinstance(elem, NavigableString):
             text = elem.strip()
-            if text:
-                current_lines.append(text)
+            if text: current_lines.append(text)
             return
-        # For elements like <p>, <li>, <td>, get their full text as one block
         if elem.name in ("p", "li", "td", "th", "figcaption", "blockquote"):
             flush_chunk()
             t = elem.get_text(separator=" ", strip=True)
-            if t and not _is_noise(t):
-                current_lines.append(t)
+            if t and not _is_noise(t): current_lines.append(t)
             flush_chunk()
             return
-        # Recurse into other containers
-        for child in elem.children:
-            collect_text(child)
+        for child in elem.children: collect_text(child)
 
     collect_text(root)
     flush_chunk()
     return chunks
 
-
-def load_urls(path: Path | None = None) -> list[str]:
-    """Load URLs from a text file (one per line). Blank lines and # comments are ignored."""
-    p = path or URLS_FILE
-    if not p.exists():
-        return []
-    urls = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        urls.append(line)
-    return urls
-
-
 def crawl_url(url: str) -> dict:
-    """Crawl a single URL and return one page result: { url, content, chunks }."""
-    res = requests.get(url, timeout=10)
-    res.raise_for_status()
+    """Crawl a single URL and return integrated text content."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        
+        try:
+            # 타임아웃 방지를 위해 대기 전략 완화 및 시간 연장
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
 
-    soup = BeautifulSoup(res.text, "html.parser")
+            all_text_blocks = []
+            
+            # FAQ 탭 버튼 찾기
+            tabs = page.locator('[role="tab"]')
+            tab_count = tabs.count()
 
-    for tag in soup.find_all(SKIP_TAGS):
-        tag.decompose()
+            if tab_count > 0:
+                print(f"[{url}] {tab_count}개의 탭 순회 시작...")
+                for i in range(tab_count):
+                    tabs.nth(i).click()
+                    page.wait_for_timeout(1500) 
+                    
+                    soup = BeautifulSoup(page.content(), "html.parser")
+                    # 불필요 태그 제거
+                    for tag in soup.find_all(SKIP_TAGS):
+                        tag.decompose()
+                        
+                    root = _get_main_root(soup)
+                    # 구조화된 청크 대신, 해당 영역의 순수 텍스트만 추출
+                    all_text_blocks.append(root.get_text(separator="\n", strip=True))
+            else:
+                # 탭이 없는 일반 페이지
+                soup = BeautifulSoup(page.content(), "html.parser")
+                for tag in soup.find_all(SKIP_TAGS):
+                    tag.decompose()
+                root = _get_main_root(soup)
+                all_text_blocks.append(root.get_text(separator="\n", strip=True))
 
-    root = _get_main_root(soup)
-    chunks = _extract_semantic_chunks(root)
+            # 모든 텍스트 블록을 하나로 합침
+            combined_content = "\n\n".join(all_text_blocks)
 
-    content_parts = []
-    for c in chunks:
-        if c["heading"]:
-            content_parts.append(c["heading"])
-        content_parts.append(c["text"])
-    content = "\n\n".join(content_parts)
+            return {
+                "url": url,
+                "content": combined_content,
+                "chunks": [] # OpenAI가 직접 하므로 빈 리스트로 유지
+            }
+            
+        except Exception as e:
+            print(f"Error crawling {url}: {e}")
+            raise e
+        finally:
+            browser.close()
 
-    return {
-        "url": url,
-        "content": content,
-        "chunks": chunks,
-    }
-
+# --- main.py에서 호출하는 핵심 함수 ---
+def load_urls(path: Path | None = None) -> list[str]:
+    p = path or URLS_FILE
+    if not p.exists(): return []
+    return [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
 
 def crawl(urls_path: Path | None = None) -> list[dict]:
     """
-    Load URLs from the urls file, crawl each, and return a list of page results.
-    Each item is { "url", "content", "chunks" }. All are appended into one list for latest.json.
+    URL 리스트를 순회하며 중복된 텍스트 블록은 제외하고 수집합니다.
     """
     urls = load_urls(urls_path)
     if not urls:
         return []
+        
     pages = []
+    # 이미 수집된 텍스트 블록을 기억 (중복 FAQ 방지)
+    global_seen_content = set()
+
     for url in urls:
         try:
-            pages.append(crawl_url(url))
+            print(f"Processing: {url}")
+            page_data = crawl_url(url)
+            
+            # 수집된 전체 텍스트를 줄 단위로 나눠서 중복 체크
+            lines = page_data["content"].split("\n")
+            unique_lines = []
+            
+            for line in lines:
+                clean_line = line.strip()
+                # 텍스트가 너무 짧지 않고, 이전에 본 적 없는 내용일 때만 추가
+                if len(clean_line) > 20: 
+                    if clean_line not in global_seen_content:
+                        unique_lines.append(clean_line)
+                        global_seen_content.add(clean_line)
+                elif clean_line: # 짧은 텍스트는 그냥 포함 (중복 체크 제외)
+                    unique_lines.append(clean_line)
+
+            # 중복이 제거된 텍스트로 갱신
+            page_data["content"] = "\n".join(unique_lines)
+            
+            # 유의미한 내용이 남은 경우만 추가
+            if page_data["content"].strip():
+                pages.append(page_data)
+            
         except Exception as e:
-            # Log and skip failed URLs so other pages still get saved
-            pages.append({
-                "url": url,
-                "content": "",
-                "chunks": [],
-                "error": str(e),
-            })
+            pages.append({"url": url, "content": "", "chunks": [], "error": str(e)})
+            
     return pages
