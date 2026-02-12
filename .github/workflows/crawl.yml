@@ -2,12 +2,13 @@ name: Manual TecAce Website Crawler via API
 
 on:
   repository_dispatch:
-    types: [run-crawler]  # API로 "run-crawler"라는 이벤트를 보낼 때 실행됨
-  workflow_dispatch:      # 깃헙 웹 UI에서도 버튼으로 실행 가능하게 유지
+    types: [run-crawler]
+  workflow_dispatch:      
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # [중요!] 봇이 파일 수정을 할 수 있도록 쓰기 권한을 명시해야 합니다.
     permissions:
       contents: write
 
@@ -32,6 +33,17 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # data 폴더가 없을 경우를 대비해 생성 시도
+          mkdir -p data
+          
+          # 변경된 파일들을 스테이징
           git add data/latest.json data/previous.json errorlog.txt || true
-          git commit -m "Auto-update: FAQ content changed" || echo "No changes to commit"
-          git push
+          
+          # 변경사항이 있는지 확인 후 커밋 (메시지에 [skip ci]를 넣으면 무한 루프 방지 가능)
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Auto-update: FAQ content changed [skip ci]"
+            git push
+          else
+            echo "No changes detected. Skipping push."
+          fi
