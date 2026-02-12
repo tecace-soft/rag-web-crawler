@@ -33,17 +33,37 @@ jobs:
           touch data/.gitkeep 
 
       - name: Commit and Push if changed
+        id: commit_step  # 이 단계에 ID를 부여합니다.
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 1. 특정 파일 대신 data 폴더 전체를 스테이징 (errorlog.txt는 삭제)
           git add data/
           
-          # 2. 변경사항이 있을 때만 커밋 및 푸시
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "Auto-update: FAQ content changed [skip ci]"
             git push origin main
+            echo "changed=true" >> $GITHUB_OUTPUT # 변화가 있으면 output 설정
           else
-            echo "No changes detected. Skipping push."
+            echo "No changes detected."
+            echo "changed=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Send/Output Data Packet
+        # 위 단계에서 'changed'가 true일 때만 실행됩니다.
+        if: steps.commit_step.outputs.changed == 'true'
+        run: |
+          echo "=== New Data Detected: Preparing Packet ==="
+          
+          # 데이터를 JSON 패키지로 만듭니다.
+          # 이 출력 결과 자체가 나중에 어디든(n8n, API, Webhook) 쏠 수 있는 최종 형태입니다.
+          echo "{
+            \"event\": \"crawl_completed\",
+            \"repository\": \"${{ github.repository }}\",
+            \"data\": $(cat data/latest.json)
+          }" > final_payload.json
+          
+          # 1. 일단 로그에 출력해서 확인
+          cat final_payload.json
+          
+          # 2. (필요 시) 여기에 다른 API 주소만 적으면 전송 끝!
+          # curl -X POST "당신의_수신_서버_주소" -H "Content-Type: application/json" -d @final_payload.json
