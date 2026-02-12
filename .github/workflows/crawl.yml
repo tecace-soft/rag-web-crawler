@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # [중요!] 봇이 파일 수정을 할 수 있도록 쓰기 권한을 명시해야 합니다.
     permissions:
       contents: write
 
@@ -27,23 +26,24 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Run Crawler
-        run: python main.py
+        run: |
+          mkdir -p data
+          python main.py
+          # 팁: 아래 파일을 생성하면 내용 변화가 없어도 폴더 구조를 강제로 올릴 수 있습니다.
+          touch data/.gitkeep 
 
       - name: Commit and Push if changed
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # data 폴더가 없을 경우를 대비해 생성 시도
-          mkdir -p data
+          # .gitignore에서 해제했더라도 명시적으로 모든 파일을 추가
+          git add data/*.json data/.gitkeep errorlog.txt || true
           
-          # 변경된 파일들을 스테이징
-          git add data/latest.json data/previous.json errorlog.txt || true
-          
-          # 변경사항이 있는지 확인 후 커밋 (메시지에 [skip ci]를 넣으면 무한 루프 방지 가능)
+          # 변경사항이 있는지 확인 후 커밋
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "Auto-update: FAQ content changed [skip ci]"
-            git push
+            git push origin main
           else
             echo "No changes detected. Skipping push."
           fi
