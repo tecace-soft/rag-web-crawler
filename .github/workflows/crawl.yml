@@ -37,10 +37,10 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # .gitignore에서 해제했더라도 명시적으로 모든 파일을 추가
-          git add data/*.json data/.gitkeep errorlog.txt || true
+          # 1. 특정 파일 대신 data 폴더 전체를 스테이징 (errorlog.txt는 삭제)
+          git add data/
           
-          # 변경사항이 있는지 확인 후 커밋
+          # 2. 변경사항이 있을 때만 커밋 및 푸시
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "Auto-update: FAQ content changed [skip ci]"
             git push origin main
