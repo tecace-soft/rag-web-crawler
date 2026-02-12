@@ -4,7 +4,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup, NavigableString
 
-URLS_FILE = Path(__file__).resolve().parent.parent / "urls.txt"
+
+URLS_FILE = Path(__file__).resolve().parent / "urls.txt"
 MIN_LEN = 40
 SKIP_TAGS = {"script", "style", "noscript", "svg", "iframe"}
 BLOCKLIST = {"Sign in", "Log in", "Contact", "Get started", "Learn more", "Privacy Policy", "Terms of Service", "Schedule a Demo", "Menu", "Close", "Cookie", "Accept", "Subscribe", "Submit", "Loading"}
@@ -89,7 +90,7 @@ def _extract_semantic_chunks(root) -> list[dict]:
     return chunks
 
 def crawl_url(url: str) -> dict:
-    """Crawl a single URL and return integrated text content."""
+    """Crawl a single URL and return integrated text content WITHOUT chunks."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -98,50 +99,33 @@ def crawl_url(url: str) -> dict:
         page = context.new_page()
         
         try:
-            # 타임아웃 방지를 위해 대기 전략 완화 및 시간 연장
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(2000)
 
             all_text_blocks = []
-            
-            # FAQ 탭 버튼 찾기
             tabs = page.locator('[role="tab"]')
             tab_count = tabs.count()
 
             if tab_count > 0:
-                print(f"[{url}] {tab_count}개의 탭 순회 시작...")
+                print(f"[{url}] {tab_count}개의 탭 발견. 순회 중...")
                 for i in range(tab_count):
                     tabs.nth(i).click()
                     page.wait_for_timeout(1500) 
-                    
                     soup = BeautifulSoup(page.content(), "html.parser")
-                    # 불필요 태그 제거
-                    for tag in soup.find_all(SKIP_TAGS):
-                        tag.decompose()
-                        
+                    for tag in soup.find_all(SKIP_TAGS): tag.decompose()
                     root = _get_main_root(soup)
-                    # 구조화된 청크 대신, 해당 영역의 순수 텍스트만 추출
                     all_text_blocks.append(root.get_text(separator="\n", strip=True))
             else:
-                # 탭이 없는 일반 페이지
                 soup = BeautifulSoup(page.content(), "html.parser")
-                for tag in soup.find_all(SKIP_TAGS):
-                    tag.decompose()
+                for tag in soup.find_all(SKIP_TAGS): tag.decompose()
                 root = _get_main_root(soup)
                 all_text_blocks.append(root.get_text(separator="\n", strip=True))
 
-            # 모든 텍스트 블록을 하나로 합침
-            combined_content = "\n\n".join(all_text_blocks)
-
+            # chunks 없이 url과 content만 반환
             return {
                 "url": url,
-                "content": combined_content,
-                "chunks": [] # OpenAI가 직접 하므로 빈 리스트로 유지
+                "content": "\n\n".join(all_text_blocks)
             }
-            
-        except Exception as e:
-            print(f"Error crawling {url}: {e}")
-            raise e
         finally:
             browser.close()
 
@@ -154,6 +138,7 @@ def load_urls(path: Path | None = None) -> list[str]:
 def crawl(urls_path: Path | None = None) -> list[dict]:
     """
     URL 리스트를 순회하며 중복된 텍스트 블록은 제외하고 수집합니다.
+    하나의 URL이라도 실패하면 예외를 발생시켜 전체 프로세스를 중단합니다.
     """
     urls = load_urls(urls_path)
     if not urls:
@@ -166,6 +151,7 @@ def crawl(urls_path: Path | None = None) -> list[dict]:
     for url in urls:
         try:
             print(f"Processing: {url}")
+            # crawl_url 내부에서 발생하는 Timeout 등 모든 에러를 catch하지 않고 둡니다.
             page_data = crawl_url(url)
             
             # 수집된 전체 텍스트를 줄 단위로 나눠서 중복 체크
@@ -190,6 +176,8 @@ def crawl(urls_path: Path | None = None) -> list[dict]:
                 pages.append(page_data)
             
         except Exception as e:
-            pages.append({"url": url, "content": "", "chunks": [], "error": str(e)})
+            # 에러 발생 시 로그만 찍고 예외를 다시 던짐(raise) -> main.py에서 중단 처리
+            print(f"❌ Critical error at {url}: {e}")
+            raise e
             
     return pages
