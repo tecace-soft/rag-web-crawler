@@ -1,5 +1,6 @@
 **1) use this script to start the github actions process:
 **
+
 $headers = @{
     "Accept" = "application/vnd.github+json"
     "Authorization" = "Bearer YOUR-API-KEY-TOKEN-GOES-HERE" # CHANGE HERE
@@ -23,5 +24,6 @@ Write-Host "크롤러에 URL 리스트를 보냈습니다!" -ForegroundColor Gre
 
 **2) output can be accessible from here:
 **   
+
 https://raw.githubusercontent.com/tecace-soft/rag-web-crawler/main/data/latest.json?v=1
 NOTE: githubusercontent doesnt show the latest json file change right away, and it usually takes more than 5 mins due to CDN cache. adding "?v=1" to bypass this issue.
