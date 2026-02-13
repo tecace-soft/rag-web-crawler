@@ -1,5 +1,6 @@
 import re
 import asyncio
+import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup, NavigableString
@@ -135,12 +136,16 @@ def load_urls(path: Path | None = None) -> list[str]:
     if not p.exists(): return []
     return [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
 
-def crawl(urls_path: Path | None = None) -> list[dict]:
+def crawl(urls_input: list[str] | Path | None = None) -> list[dict]:
     """
-    URL 리스트를 순회하며 중복된 텍스트 블록은 제외하고 수집합니다.
-    하나의 URL이라도 실패하면 예외를 발생시켜 전체 프로세스를 중단합니다.
+    URL 리스트(list)를 직접 받거나, 파일 경로(Path)를 통해 URL을 로드하여 크롤링을 수행합니다.
     """
-    urls = load_urls(urls_path)
+    # 1. 입력값이 리스트인 경우 바로 사용하고, 아니면 기존처럼 load_urls를 통해 파일에서 읽습니다.
+    if isinstance(urls_input, list):
+        urls = urls_input
+    else:
+        urls = load_urls(urls_input)
+        
     if not urls:
         return []
         
@@ -165,7 +170,7 @@ def crawl(urls_path: Path | None = None) -> list[dict]:
                     if clean_line not in global_seen_content:
                         unique_lines.append(clean_line)
                         global_seen_content.add(clean_line)
-                elif clean_line: # 짧은 텍스트는 그냥 포함 (중복 체크 제외)
+                elif clean_line:
                     unique_lines.append(clean_line)
 
             # 중복이 제거된 텍스트로 갱신

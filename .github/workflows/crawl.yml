@@ -3,7 +3,12 @@ name: Manual TecAce Website Crawler via API
 on:
   repository_dispatch:
     types: [run-crawler]
-  workflow_dispatch:      
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Comma-separated URLs'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -28,9 +33,12 @@ jobs:
       - name: Run Crawler
         run: |
           mkdir -p data
-          python main.py
-          # 팁: 아래 파일을 생성하면 내용 변화가 없어도 폴더 구조를 강제로 올릴 수 있습니다.
-          touch data/.gitkeep 
+          # 페이로드 또는 수동 입력값 가져오기
+          URL_LIST="${{ github.event.client_payload.urls || github.event.inputs.urls }}"
+          echo "Processing URLs: $URL_LIST"
+          # 큰따옴표로 감싸서 공백 포함 인자 대응
+          python main.py "$URL_LIST"
+          touch data/.gitkeep
 
       - name: Commit and Push if changed
         id: commit_step  # 이 단계에 ID를 부여합니다.
@@ -52,18 +60,4 @@ jobs:
         # 위 단계에서 'changed'가 true일 때만 실행됩니다.
         if: steps.commit_step.outputs.changed == 'true'
         run: |
-          echo "=== New Data Detected: Preparing Packet ==="
-          
-          # 데이터를 JSON 패키지로 만듭니다.
-          # 이 출력 결과 자체가 나중에 어디든(n8n, API, Webhook) 쏠 수 있는 최종 형태입니다.
-          echo "{
-            \"event\": \"crawl_completed\",
-            \"repository\": \"${{ github.repository }}\",
-            \"data\": $(cat data/latest.json)
-          }" > final_payload.json
-          
-          # 1. 일단 로그에 출력해서 확인
-          cat final_payload.json
-          
-          # 2. (필요 시) 여기에 다른 API 주소만 적으면 전송 끝!
-          # curl -X POST "당신의_수신_서버_주소" -H "Content-Type: application/json" -d @final_payload.json
+          cat data/latest.json # 로그에서 결과 확인용
